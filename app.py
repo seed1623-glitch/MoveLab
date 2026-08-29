@@ -74,8 +74,6 @@ if not api_key:
     st.info("💡 画面左上のサイドバーから Gemini API Key を入力するか、Secretsに設定してください。")
     st.stop()
 
-client = genai.Client(api_key=api_key)
-
 # セッション状態の初期化
 if "subtitles_data" not in st.session_state:
     st.session_state.subtitles_data = None
@@ -189,36 +187,52 @@ if uploaded_file is not None:
 
                 # 3. Gemini文字起こし
                 status_box.update(label="3/3: Gemini AIがテロップを生成中...")
-                audio_file = client.files.upload(file=str(temp_audio))
-                while audio_file.state.name == "PROCESSING":
-                    time.sleep(2)
-                    audio_file = client.files.get(name=audio_file.name)
+                try:
+                    client = genai.Client(api_key=api_key.strip())
+                    audio_file = client.files.upload(file=str(temp_audio))
+                    
+                    while audio_file.state.name == "PROCESSING":
+                        time.sleep(2)
+                        audio_file = client.files.get(name=audio_file.name)
 
-                prompt = """
+                    prompt = """
 動画音声を書き起こし、正確なタイムスタンプ付きの標準的なSRTフォーマットのみを出力してください。
 【厳格な要件】
 1. Markdown記号（```srt 等）や挨拶文は一切含めない。
 2. 1セクションあたり12〜16文字程度でテンポよく分割する。
 3. フィラー（えーと、あの等）は削除し、句読点は半角スペースに置き換える。
 """
-                res = client.models.generate_content(
-                    model="gemini-2.5-flash",
-                    contents=[audio_file, prompt]
-                )
-                client.files.delete(name=audio_file.name)
+                    res = client.models.generate_content(
+                        model="gemini-2.0-flash",
+                        contents=[audio_file, prompt]
+                    )
+                    try:
+                        client.files.delete(name=audio_file.name)
+                    except Exception:
+                        pass
 
-                # SRTをパース
-                raw_srt = res.text.strip()
-                raw_srt = re.sub(r"^```(?:srt)?\s*", "", raw_srt)
-                raw_srt = re.sub(r"\s*```$", "", raw_srt)
-                pattern = re.compile(r"(\d+)\n(\d{2}:\d{2}:\d{2},\d{3} --> \d{2}:\d{2}:\d{2},\d{3})\n([\s\S]*?)(?=\n\n|\Z)")
-                matches = pattern.findall(raw_srt)
+                    # SRTをパース
+                    raw_srt = res.text.strip()
+                    raw_srt = re.sub(r"^```(?:srt)?\s*", "", raw_srt)
+                    raw_srt = re.sub(r"\s*```$", "", raw_srt)
+                    pattern = re.compile(r"(\d+)\n(\d{2}:\d{2}:\d{2},\d{3} --> \d{2}:\d{2}:\d{2},\d{3})\n([\s\S]*?)(?=\n\n|\Z)")
+                    matches = pattern.findall(raw_srt)
 
-                data = [{"番号": int(m[0]), "タイムスタンプ": m[1], "テロップテキスト": m[2].strip()} for m in matches]
-                st.session_state.subtitles_data = pd.DataFrame(data)
+                    if not matches:
+                        st.error("⚠️ 音声からテロップを検出できませんでした（無音または聞き取り不能）。")
+                        st.stop()
 
-                status_box.update(label="🎉 解析が完了しました！", state="complete")
-                st.rerun()
+                    data = [{"番号": int(m[0]), "タイムスタンプ": m[1], "テロップテキスト": m[2].strip()} for m in matches]
+                    st.session_state.subtitles_data = pd.DataFrame(data)
+
+                    status_box.update(label="🎉 解析が完了しました！", state="complete")
+                    st.rerun()
+
+                except Exception as e:
+                    status_box.update(label="❌ エラーが発生しました", state="error")
+                    st.error(f"Gemini API 呼び出しエラー: {e}")
+                    st.info("💡 Secretsに設定した `GEMINI_API_KEY` が正しいか再度ご確認ください。")
+                    st.stop()
 
     # Step 2: プレビュー & テロップ編集・装飾
     if st.session_state.subtitles_data is not None:
