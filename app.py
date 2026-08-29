@@ -203,7 +203,7 @@ if uploaded_file is not None:
 3. フィラー（えーと、あの等）は削除し、句読点は半角スペースに置き換える。
 """
                     res = client.models.generate_content(
-                        model="gemini-2.0-flash",
+                        model="gemini-3.6-flash",
                         contents=[audio_file, prompt]
                     )
                     try:
