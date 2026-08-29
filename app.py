@@ -208,19 +208,106 @@ if uploaded_file is not None:
                 client.files.delete(name=audio_file.name)
 
                 # SRTをパース
-                raw_srt = re.sub(r"^
-http://googleusercontent.com/immersive_entry_chip/0
+                raw_srt = res.text.strip()
+                raw_srt = re.sub(r"^```(?:srt)?\s*", "", raw_srt)
+                raw_srt = re.sub(r"\s*```$", "", raw_srt)
+                pattern = re.compile(r"(\d+)\n(\d{2}:\d{2}:\d{2},\d{3} --> \d{2}:\d{2}:\d{2},\d{3})\n([\s\S]*?)(?=\n\n|\Z)")
+                matches = pattern.findall(raw_srt)
 
----
+                data = [{"番号": int(m[0]), "タイムスタンプ": m[1], "テロップテキスト": m[2].strip()} for m in matches]
+                st.session_state.subtitles_data = pd.DataFrame(data)
 
-### 【ステップ3】Streamlit CloudのSecretsに貼り付ける内容
+                status_box.update(label="🎉 解析が完了しました！", state="complete")
+                st.rerun()
 
-> Streamlit Cloudの **「Advanced settings...」➜「Secrets」** 枠に貼り付けます。  
-> `""` の中をご自身のパスワードとAPIキーに書き換えてください。
+    # Step 2: プレビュー & テロップ編集・装飾
+    if st.session_state.subtitles_data is not None:
+        st.subheader("📺 処理後プレビュー")
+        st.video(st.session_state.processed_video_bytes)
 
-```toml
-# アプリを開く際に入力するパスワード（半角英数字で自由に設定）
-APP_PASSWORD = "your_password_here"
+        st.subheader("✏️ 1. テロップの確認・手動修正")
+        st.caption("表のセルを直接タップして誤字や言い回しを修正できます。")
+        edited_df = st.data_editor(
+            st.session_state.subtitles_data,
+            column_config={
+                "番号": st.column_config.NumberColumn(disabled=True, width="small"),
+                "タイムスタンプ": st.column_config.TextColumn(width="medium"),
+                "テロップテキスト": st.column_config.TextColumn("テロップ文字", width="large"),
+            },
+            hide_index=True,
+            use_container_width=True
+        )
 
-# Google AI Studioで取得したAPIキー（AIzaSy...）
-GEMINI_API_KEY = "your_gemini_api_key_here"
+        st.subheader("🎨 2. デザイン・装飾設定")
+        col1, col2 = st.columns(2)
+        with col1:
+            font_color_name = st.selectbox("文字色", ["黄", "白", "赤", "緑", "水色"], index=0)
+            font_size = st.slider("文字サイズ", 14, 40, 24)
+            is_bold = st.checkbox("太字（Bold）", value=True)
+            position = st.selectbox("配置位置", ["下部", "中央", "上部"], index=0)
+        with col2:
+            outline_color_name = st.selectbox("枠線の色", ["黒", "白", "なし"], index=0)
+            outline_width = st.slider("枠線の太さ", 0, 8, 3)
+            bg_style = st.selectbox("背景座布団", ["なし", "半透明黒", "不透明黒"], index=0)
+            margin_v = st.slider("画面端からの余白", 10, 150, 45)
+
+        # スタイル変換
+        color_hex = {
+            "白": "&H00FFFFFF", "黄": "&H0000FFFF", "赤": "&H000000FF",
+            "緑": "&H0000FF00", "水色": "&H00FFFF00", "黒": "&H00000000"
+        }
+        primary_c = color_hex.get(font_color_name, "&H0000FFFF")
+        outline_c = color_hex.get(outline_color_name, "&H00000000")
+        bold_val = 1 if is_bold else 0
+        align_val = {"下部": 2, "中央": 5, "上部": 8}[position]
+
+        if bg_style == "半透明黒":
+            border_style, back_color = 3, "&H80000000"
+        elif bg_style == "不透明黒":
+            border_style, back_color = 3, "&H00000000"
+        else:
+            border_style, back_color = 1, "&H00000000"
+
+        # Step 3: 焼き込み出力
+        if st.button("🎬 修正テロップを焼き込んで完成動画を出力", type="primary"):
+            with st.spinner("テロップを動画に焼き込み中..."):
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    temp_dir = Path(temp_dir)
+                    final_input_video = temp_dir / "final_input.mp4"
+                    temp_srt = temp_dir / "subtitles.srt"
+                    final_output_video = temp_dir / f"final_{st.session_state.video_file_name}"
+
+                    with open(final_input_video, "wb") as f:
+                        f.write(st.session_state.processed_video_bytes)
+
+                    srt_lines = [f"{row.番号}\n{row.タイムスタンプ}\n{row.テロップテキスト}\n" for row in edited_df.itertuples()]
+                    with open(temp_srt, "w", encoding="utf-8") as f:
+                        f.write("\n".join(srt_lines))
+
+                    escaped_srt = str(temp_srt).replace(":", "\\:")
+                    style_str = (
+                        f"Fontname=Noto Sans CJK JP,FontSize={font_size},"
+                        f"PrimaryColour={primary_c},OutlineColour={outline_c},"
+                        f"BackColour={back_color},Bold={bold_val},"
+                        f"Outline={outline_width},Shadow=1,Alignment={align_val},"
+                        f"MarginV={margin_v},BorderStyle={border_style}"
+                    )
+                    subtitle_filter = f"subtitles={escaped_srt}:force_style='{style_str}'"
+
+                    subprocess.run([
+                        "ffmpeg", "-y", "-i", str(final_input_video),
+                        "-vf", subtitle_filter, "-c:a", "copy",
+                        str(final_output_video)
+                    ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+
+                    st.success("🎉 完成しました！")
+                    st.video(str(final_output_video))
+
+                    with open(final_output_video, "rb") as f:
+                        st.download_button(
+                            label="📥 完成した動画を保存",
+                            data=f.read(),
+                            file_name=f"final_{st.session_state.video_file_name}",
+                            mime="video/mp4",
+                            type="primary"
+                        )
