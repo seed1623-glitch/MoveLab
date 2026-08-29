@@ -1,2 +1,2 @@
 [server]
-maxUploadSize = 500
+maxUploadSize = 1000   # 1000MB（約1GB）に変更する場合
